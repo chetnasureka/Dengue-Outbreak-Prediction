@@ -1,0 +1,929 @@
+
+## Some abbreviations we have used:
+1.SJ San Juan
+2.IQ Iquitos
+3.NB Negative Binomial
+4.SVR Support Vector for regression
+5.ADF Augmented Dickey-Fuller test
+
+## Importing all datasets
+```{r}
+library(readr)
+
+
+dengue_features_train <- read_csv("dengue_features_train.csv")
+dengue_labels_train <- read_csv("dengue_labels_train.csv")
+dengue_features_test <- read_csv("dengue_features_test.csv")
+```
+
+#Correlation Plot
+
+
+```{r}
+
+library("GGally")
+
+temp=dengue_features_train[complete.cases(dengue_features_train),]
+temp=temp[,!(names(temp) %in% c('city','week_start_date','weekofyear','year'))]
+
+ggcorr(temp, label = TRUE, hjust = 1,label_size = 2, label_round = 2, label_alpha = TRUE, layout.exp = 4,name='r value')
+
+
+```
+
+
+## Correlation study
+The following are the columnswe have dropped after studying the correlation and variances of the attributes in the data set:
+1.precipitation_amt_mm
+2.reanalysis_dew_point_temp_k
+3.reanalysis_max_air_temp_k
+4.reanalysis_air_temp_k
+
+```{r echo=FALSE}
+temp=dengue_features_train[complete.cases(dengue_features_train),]
+
+sum(is.na(dengue_features_train$precipitation_amt_mm))
+sum(is.na(dengue_features_train$reanalysis_sat_precip_amt_mm))
+
+#Precipitation
+cor(temp$precipitation_amt_mm,temp$reanalysis_sat_precip_amt_mm)
+plot(temp$precipitation_amt_mm,temp$reanalysis_sat_precip_amt_mm, main="precipitation_amt_mm vs reanalysis_sat_precip_amt_mm", xlab ="precipitation_amt_mm", ylab="reanalysis_sat_precip_amt_mm")
+
+#Avg temp.
+cor(temp$reanalysis_avg_temp_k,temp$reanalysis_air_temp_k)
+plot(temp$reanalysis_avg_temp_k,temp$reanalysis_air_temp_k, main="reanalysis_avg_temp_k vs reanalysis_air_temp_k",xlab="reanalysis_avg_temp_k",ylab="reanalysis_air_temp_k")
+
+#Dew point temp
+cor(temp$reanalysis_dew_point_temp_k,temp$reanalysis_specific_humidity_g_per_kg)
+plot(temp$reanalysis_dew_point_temp_k,temp$reanalysis_specific_humidity_g_per_kg, main="reanalysis_dew_point_temp_k vs reanalysis_specific_humidity_g_per_kg", xlab="reanalysis_dew_point_temp_k",ylab="reanalysis_specific_humidity_g_per_kg")
+
+#Reanalysis max air temp
+cor(temp$reanalysis_max_air_temp_k,temp$reanalysis_tdtr_k)
+plot(temp$reanalysis_max_air_temp_k,temp$reanalysis_tdtr_k, main="reanalysis_max_air_temp_k vs reanalysis_tdtr_k",xlab="reanalysis_max_air_temp_k",ylab="reanalysis_tdtr_k")
+
+
+drops=c('precipitation_amt_mm','reanalysis_dew_point_temp_k','reanalysis_max_air_temp_k','reanalysis_air_temp_k')
+dengue_features_train=dengue_features_train[,!(names(dengue_features_train) %in% drops)]
+
+#Final feature names
+names(dengue_features_train)
+
+```
+
+
+## Dropping rows which do not have any data(in the columns) except for city, year, week_start_date and weekofyear
+
+```{r}
+
+nrow(dengue_features_train)
+
+drop_rows=which(rowSums(is.na(dengue_features_train))==ncol(dengue_features_train)-4)
+
+dengue_features_train=dengue_features_train[-drop_rows,]
+
+nrow(dengue_features_train)
+```
+
+## Handling the missing values in columns
+
+```{r}
+# count missing values (as percent)
+
+data.frame(apply(dengue_features_train, 2, function(x){round(100 * (length(which(is.na(x))))/length(x) , digits = 1)}))
+
+#Checking variation
+
+drops=c('city','year','week_start_date','weekofyear')
+temp=dengue_features_train[complete.cases(dengue_features_train),!(names(dengue_features_train) %in% drops)]
+
+co.var <- function(x) ( 100*sd(x)/mean(x) )
+
+data.frame(apply(temp,2,co.var))
+```
+
+## Imputing missing values
+
+For these columns 'ndvi_ne','ndvi_nw','station_avg_temp_c','station_diur_temp_rng_c',we are using MICE imputation because they have greater proportion of missing value. For the remaining column, we are using nearest neighbour interpolation.
+
+```{r}
+library(zoo)
+library(mice)
+#Change later
+drops=c('ndvi_ne','ndvi_nw','station_avg_temp_c','station_diur_temp_rng_c') #<=1.2%
+sj_features_train=dengue_features_train[dengue_features_train$city=='sj',!(names(dengue_features_train) %in% drops)]
+iq_features_train=dengue_features_train[dengue_features_train$city=='iq',!(names(dengue_features_train) %in% drops)]
+
+# impute NAs by the latest value
+sj_features_train= na.locf(sj_features_train,fromLast = TRUE)
+iq_features_train= na.locf(iq_features_train,fromLast = TRUE)
+
+dengue_features_train[,!(names(dengue_features_train) %in%  drops)]=rbind(sj_features_train,iq_features_train)
+
+library(lubridate)
+month <- dengue_features_train$week_start_date
+month<-month(as.POSIXlt(month, format="%Y-%m-%d"))
+dengue_features_train$month<-month
+
+drops=c("city","week_start_date")
+sj<-dengue_features_train[dengue_features_train$city=='sj',!(names(dengue_features_train) %in% drops)]
+sj<-mice(data = sj, m = 5, method = "pmm", maxit = 50, seed = 500)
+sj<-complete(sj)
+dengue_features_train[dengue_features_train$city=='sj',!(names(dengue_features_train) %in% drops)]=sj
+
+iq<-dengue_features_train[dengue_features_train$city=='iq',!(names(dengue_features_train) %in% drops)]
+iq<-mice(data = iq, m = 5, method = "pmm", maxit = 50, seed = 500)
+iq<-complete(iq)
+dengue_features_train[dengue_features_train$city=='iq',!(names(dengue_features_train) %in% drops)]=iq
+```
+
+## Scaling data and converting data types to int
+
+For the columns where temperature is given in Kelvin, we are converting it to Celsius so that the higher magnitude of temp. in Kelvin scale does not affect our analysis
+
+```{r}
+drops=c('city','week_start_date')
+
+temp=data.frame(data.matrix(dengue_features_train[,!(names(dengue_features_train) %in% drops)]))
+
+dengue_features_train[,!(names(dengue_features_train) %in% drops)]=temp
+#scaling columns where temp is in Kelvin to Celsius
+l=c('reanalysis_avg_temp_k','reanalysis_min_air_temp_k')
+dengue_features_train[,l]=dengue_features_train[,l]-273.15
+```
+
+
+## Merging 2 datasets to get total_cases
+
+```{r}
+dengue_labels_train=dengue_labels_train[-drop_rows,]
+dengue_features_train$total_cases = dengue_labels_train$total_cases
+final_data=dengue_features_train
+```
+
+
+
+##Some Visualizations
+
+Data available for both cities are for different years with some overlap.
+It can be seen the average temp and precipitation is same for both cities but the humidity percent is very high for Iquitos.
+
+```{r}
+library(ggplot2)
+t=final_data
+
+p=ggplot(data=t, aes(x=t$week_start_date,y=t$reanalysis_avg_temp_k, group = t$city, colour = t$city))+geom_line()+labs(title="Overall variation of Avg. temperature in both cities",colour="City",x='Week start date',y='Avg. temperature in Kelvin')
+plot(p)
+
+p=ggplot(data=t, aes(x=t$week_start_date,y=t$reanalysis_relative_humidity_percent, group = t$city, colour = t$city))+geom_line()+labs(title="Overall variation of relative humidity percent in both cities",colour="City",x='Week start date',y='Relative humidity percent')
+plot(p)
+
+p=ggplot(data=t, aes(x=t$week_start_date,y=t$reanalysis_precip_amt_kg_per_m2, group = t$city, colour = t$city))+geom_line()+labs(title="Overall variation of precipitation amount in both cities",colour="City",x='Week start date',y='Precipitation amount in kg/m2')
+plot(p)
+
+```
+
+##For 2005 as an example
+We can see that the variation is the climate parameter are very different across the months for both the cities. Hence we decided to build different models for both cities.
+
+```{r}
+t=final_data[final_data$year==2005,]
+
+p=ggplot(data=t, aes(x=t$week_start_date,y=t$reanalysis_avg_temp_k, group = t$city, colour = t$city))+geom_line()+labs(title="Overall variation of Avg. temperature in both cities",colour="City",x='Week start date',y='Avg. temperature in Kelvin')
+plot(p)
+
+p=ggplot(data=t, aes(x=t$week_start_date,y=t$reanalysis_relative_humidity_percent, group = t$city, colour = t$city))+geom_line()+labs(title="Overall variation of relative humidity percent in both cities",colour="City",x='Week start date',y='Relative humidity percent')
+plot(p)
+
+p=ggplot(data=t, aes(x=t$week_start_date,y=t$reanalysis_precip_amt_kg_per_m2, group = t$city, colour = t$city))+geom_line()+labs(title="Overall variation of precipitation amount in both cities",colour="City",x='Week start date',y='Precipitation amount in kg/m2')
+plot(p)
+```
+
+## Boruta feature selection method
+
+Boruta is an all relevant feature selection wrapper algorithm.By default, Boruta uses Random Forest. We ran it a p value 0f 0.05 and found that no attribute was considered unimportant
+
+Boruta feature selection takes about 5-10 minutes to run. The plot is on our Github repository
+https://github.com/JyothsnaKS/DengAI-plots/blob/master/Boruta_plot.png
+
+```{r}
+library(Boruta)
+set.seed(10)
+
+traindata=final_data[ , !(names(final_data) %in% c("year","city","week_start_date"))]
+
+boruta.train <- Boruta(total_cases~., data = traindata, doTrace = 5, pValue=0.05)
+print(boruta.train)
+final.boruta <- TentativeRoughFix(boruta.train)
+print(final.boruta)
+boruta.df <- attStats(final.boruta)
+class(boruta.df)
+
+print(boruta.df)
+
+plot(final.boruta, xlab = "", xaxt = "n")
+lz<-lapply(1:ncol(boruta.train$ImpHistory),function(i)
+boruta.train$ImpHistory[is.finite(boruta.train$ImpHistory[,i]),i])
+names(lz) <- colnames(boruta.train$ImpHistory)
+Labels <- sort(sapply(lz,median))
+axis(side = 1,las=2,labels = names(Labels),
+at = 1:ncol(boruta.train$ImpHistory), cex.axis = 0.7)
+```
+
+##Some general point with respect to linear, Negative Binomial and Support Vector for regression
+Training dataset accounts for about 600 rows and 336 rows as inputs for San Juan and Iquitos and testing dataset as 333 and 182 rows repectively (about 65% split). Since ours is a prediction model, we donot perform simple random sampling sut sequentially divide the datset.
+
+## Linear Regression
+
+The first model we built to learn our data is linear regression. The mean absolute error(MAE) is high. From the plots we can 
+see that the actual and predicted values are far away from each other.
+```{r}
+library('dplyr')
+library('plotly')
+
+# function that returns Mean Absolute Error
+mae <- function(error) return(mean(abs(error)) )
+drops=c('city','week_start_date')
+
+sj_train=final_data[final_data$city=='sj',!(names(final_data) %in% drops)]
+iq_train=final_data[final_data$city=='iq',!(names(final_data) %in% drops)]
+
+# split up the data
+sj_train_subtrain <- head(sj_train, 600)
+sj_train_subtest  <- tail(sj_train, nrow(sj_train) - 600)
+
+iq_train_subtrain <- head(iq_train, 336)
+iq_train_subtest  <- tail(iq_train, nrow(iq_train) - 336)
+
+linearMod_sj <- lm(total_cases ~ ., data=sj_train_subtrain)
+sj_train_subtest$fitted=predict(linearMod_sj,sj_train_subtest)
+sj_train_subtest$fitted[sj_train_subtest$fitted < 0]=0
+sj_train_subtest$fitted <- as.integer(sj_train_subtest$fitted)
+cat('San Juan\n MAE:',mae(sj_train_subtest$fitted-sj_train_subtest$total_cases))
+
+linearMod_iq <- lm(total_cases ~ ., data=iq_train_subtrain)
+iq_train_subtest$fitted=predict(linearMod_iq,iq_train_subtest)
+iq_train_subtest$fitted[iq_train_subtest$fitted < 0]=0
+iq_train_subtest$fitted <- as.integer(iq_train_subtest$fitted)
+cat('\nIquitos\n MAE:',mae(iq_train_subtest$fitted-iq_train_subtest$total_cases))
+
+p <- plot_ly(sj_train_subtest, x = c(1:333), y = ~fitted, name = 'Predicted', type = 'scatter', mode = 'lines') %>%
+add_trace(y = ~total_cases, name = 'Actual', mode = 'lines+markers') %>%
+  layout(title = 'Actual vs predicted values for San Jaun',
+         xaxis = list(title = 'Time'),
+         yaxis = list (title = 'Total no. of dengue cases'))
+p
+
+q <- plot_ly(iq_train_subtest, x = c(1:182), y = ~fitted, name = 'Predicted', type = 'scatter', mode = 'lines') %>%
+add_trace(y = ~total_cases, name = 'Actual', mode = 'lines+markers') %>%
+  layout(title = 'Actual vs predicted values for Iquitos',
+         xaxis = list(title = 'Time'),
+         yaxis = list (title = 'Total no. of dengue cases'))
+q
+```
+
+
+#Distribution of total cases of dengue for San Juan and Iquitos
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+sj_train_labels=final_data[final_data$city=='sj',]
+iq_train_labels=final_data[final_data$city=='iq',]
+
+# total cases of dengue: histograms
+rbind(iq_train_labels, sj_train_labels) %>% 
+  ggplot(aes(x = total_cases,fill = ..count..)) + 
+  geom_histogram(bins = 12, colour = 'black') + ggtitle('Total Cases of Dengue') +
+  scale_y_continuous(breaks = seq(0,700,100)) + facet_wrap(~city)
+
+```
+
+The graphs follow a Negative Binomial Distribution .
+
+```{r}
+# distibution of labels
+cat('\nSan Juan\n',
+    '\t total cases mean: ',      sj_train_labels$total_cases %>% mean(), 
+    '\t total cases variance: ' , sj_train_labels$total_cases %>% var() )
+cat('\nIquitos\n',
+    '\t total cases mean: ',      iq_train_labels$total_cases %>% mean(), 
+    '\t total cases variance: ' , iq_train_labels$total_cases %>% var() )
+
+```
+
+Variance >> Mean suggests total_cases can be described by a Negative Binomial Distribution.
+Thus we can apply Negative Binomial Regression Model.
+
+## Building negative binomial regression model
+
+```{r}
+library(plotly)
+# function that returns Mean Absolute Error
+mae <- function(error) return(mean(abs(error)) )
+
+get_bst_model <- function(train, test)
+{
+  
+  # Step 1: specify the form of the model
+  form <- "total_cases ~ 1+
+weekofyear+
+ndvi_ne+                               
+ndvi_nw+                              
+ndvi_se+                              
+ndvi_sw+                               
+reanalysis_avg_temp_k+                 
+reanalysis_min_air_temp_k+             
+reanalysis_precip_amt_kg_per_m2+       
+reanalysis_relative_humidity_percent+  
+reanalysis_sat_precip_amt_mm         + 
+reanalysis_specific_humidity_g_per_kg +
+reanalysis_tdtr_k                     +
+station_avg_temp_c                    +
+station_diur_temp_rng_c               +
+station_max_temp_c                    +
+station_min_temp_c                    +
+station_precip_mm+
+month  + year
+"
+
+  grid = 10 ^(seq(-8, -3,1))
+
+  best_alpha = c()
+  best_score = 1000
+  
+  # Step 2: Find the best hyper parameter, alpha
+  for (i in grid)
+    {
+      model = glm.nb(formula = form,
+                     data = train,
+                     init.theta = i)
+    
+      results <-  predict(model, test)
+      score   <-  mae(test$total_cases - results)
+      
+      if (score < best_score) {
+          best_alpha <- i
+          best_score <- score
+          cat('\nbest score = ', best_score, '\twith alpha = ', best_alpha)
+        }
+  }
+  
+  # Step 3: refit on entire dataset
+  combined <- rbind(train, test)
+  combined_model = glm.nb(formula=form,
+                          data = combined,
+                          init.theta = best_alpha)
+  
+  return (combined_model)
+}
+
+drops=c('city','week_start_date')
+
+sj_train=final_data[final_data$city=='sj',!(names(final_data) %in% drops)]
+iq_train=final_data[final_data$city=='iq',!(names(final_data) %in% drops)]
+
+# split up the data
+sj_train_subtrain <- head(sj_train, 800)
+sj_train_subtest  <- tail(sj_train, nrow(sj_train) - 800)
+
+iq_train_subtrain <- head(iq_train, 400)
+iq_train_subtest  <- tail(iq_train, nrow(iq_train) - 400)
+
+library(MASS)
+sj_model <- get_bst_model(sj_train_subtrain, sj_train_subtest)
+iq_model <- get_bst_model(iq_train_subtrain, iq_train_subtest)
+```
+
+## Testing and Evaluating the NB model
+
+```{r,p}
+#Training accuracy
+sj_train$fitted = predict(sj_model, sj_train, type = 'response')
+iq_train$fitted = predict(iq_model, iq_train, type = 'response')
+
+
+sj_train$fitted <- as.integer(sj_train$fitted)
+iq_train$fitted <- as.integer(iq_train$fitted)
+
+cat('San Juan\n MAE',mae(sj_train$total_cases-sj_train$fitted))
+cat('\nIquitos\n MAE',mae(iq_train$total_cases-iq_train$fitted))
+
+
+p <- plot_ly(sj_train, x = c(1:933), y = ~fitted, name = 'Predicted', type = 'scatter', mode = 'lines') %>%
+add_trace(y = ~total_cases, name = 'Actual', mode = 'lines+markers') %>%
+  layout(title = 'Actual vs predicted values for San Jaun',
+         xaxis = list(title = 'Time'),
+         yaxis = list (title = 'Total no. of dengue cases'))
+p
+
+q <- plot_ly(iq_train, x = c(1:518), y = ~fitted, name = 'Predicted', type = 'scatter', mode = 'lines') %>%
+add_trace(y = ~total_cases, name = 'Actual', mode = 'lines+markers') %>%
+  layout(title = 'Actual vs predicted values for Iquitos',
+         xaxis = list(title = 'Time'),
+         yaxis = list (title = 'Total no. of dengue cases'))
+q
+
+```
+
+
+## SVM model for regression (SVR)
+
+```{r}
+library(e1071)
+
+drops=c('city','week_start_date')
+
+sj_train=final_data[final_data$city=='sj',!(names(final_data) %in% drops)]
+iq_train=final_data[final_data$city=='iq',!(names(final_data) %in% drops)]
+
+# split up the data
+sj_train_subtrain <- head(sj_train, 600)
+sj_train_subtest  <- tail(sj_train, nrow(sj_train) - 600)
+
+iq_train_subtrain <- head(iq_train, 336)
+iq_train_subtest  <- tail(iq_train, nrow(iq_train) - 336)
+
+svm.model.sj <- svm(total_cases~
+ndvi_ne+ndvi_nw+
+ndvi_se+ndvi_sw+
+reanalysis_avg_temp_k+
+reanalysis_min_air_temp_k+    
+reanalysis_precip_amt_kg_per_m2+
+reanalysis_relative_humidity_percent+ 
+reanalysis_sat_precip_amt_mm+
+reanalysis_specific_humidity_g_per_kg+
+reanalysis_tdtr_k+
+station_avg_temp_c+                   
+station_diur_temp_rng_c+
+station_max_temp_c+
+station_min_temp_c+
+station_precip_mm+month+weekofyear+year,data=sj_train_subtrain,type="nu-regression",kernel="linear")
+
+svm.model.iq <- svm(total_cases~ndvi_ne+ndvi_nw+
+ndvi_se+ndvi_sw+
+reanalysis_avg_temp_k+
+reanalysis_min_air_temp_k+    
+reanalysis_precip_amt_kg_per_m2+
+reanalysis_relative_humidity_percent+ 
+reanalysis_sat_precip_amt_mm+
+reanalysis_specific_humidity_g_per_kg+
+reanalysis_tdtr_k+
+station_avg_temp_c+                   
+station_diur_temp_rng_c+
+station_max_temp_c+
+station_min_temp_c+
+station_precip_mm+month+weekofyear,data=iq_train_subtrain,type="nu-regression",kernel="radial")
+
+sj_train_subtest$fitted <- predict(svm.model.sj,newdata=sj_train_subtest[,!(names(sj_train_subtest)%in%c('total_cases'))])
+iq_train_subtest$fitted <- predict(svm.model.iq,newdata=iq_train_subtest[,!(names(iq_train_subtest)%in%c('total_cases'))])
+
+
+sj_train_subtest$fitted[sj_train_subtest$fitted < 0]=0
+iq_train_subtest$fitted[iq_train_subtest$fitted < 0]=0
+
+sj_train_subtest$fitted <- as.integer(sj_train_subtest$fitted)
+iq_train_subtest$fitted <- as.integer(iq_train_subtest$fitted)
+
+cat("San Jaun\n MAE",mae(sj_train_subtest$total_cases-sj_train_subtest$fitted))
+cat("\nIquitos\n MAE",mae(iq_train_subtest$total_cases-iq_train_subtest$fitted))
+
+p <- plot_ly(sj_train_subtest, x = c(1:333), y = ~fitted, name = 'Predicted', type = 'scatter', mode = 'lines') %>%
+add_trace(y = ~total_cases, name = 'Actual', mode = 'lines+markers') %>%
+  layout(title = 'Actual vs predicted values for San Juan SVR model',
+         xaxis = list(title = 'Time'),
+         yaxis = list (title = 'Total no. of dengue cases'))
+p
+
+q <- plot_ly(iq_train_subtest, x = c(1:182), y = ~fitted, name = 'Predicted', type = 'scatter', mode = 'lines') %>%
+add_trace(y = ~total_cases, name = 'Actual', mode = 'lines+markers') %>%
+  layout(title = 'Actual vs predicted values for Iquitos SVR model',
+         xaxis = list(title = 'Time'),
+         yaxis = list (title = 'Total no. of dengue cases'))
+q
+```
+
+
+## Main conclusion wrt linear,SVM and Negative Binomial model
+While for >85% SVR and linear regression model almost same results but SVR is better than linear regression model alone because with smaller training data size(about 65-70%),it is able to give about 10% and 4% less error for SJ and IQ respectively. This is important for our problem, because we are trying to predict value for almost the next 5 years.
+
+NB also gives same errors with both sizes with 85% and 65% data
+
+The above are the cases where are model works well
+However, for certain years in the total range <....>, there was sharp rise in dengue cases reported. We see that neither of the above models are able to predict this accurately. This is where model fails
+
+
+##Time series analysis
+
+Month Wise Time Series
+
+```{r}
+library('lubridate')
+
+ts.sj=final_data[final_data$city=='sj',c('total_cases','month','year')]
+ts.iq=final_data[final_data$city=='iq',c('total_cases','month','year')]
+
+
+ts.sj<-aggregate(total_cases ~ month + year, ts.sj, FUN = sum)
+ts.iq<-aggregate(total_cases ~ month + year, ts.iq, FUN = sum)
+
+ts.sj.object=ts(data = ts.sj$total_cases, start =c(1990,4), end =c(2008,4) , frequency = 12 )
+ts.iq.object=ts(data = ts.iq$total_cases, start =c(2000,7), end =c(2010,6) , frequency = 12 )
+
+```
+
+
+
+##For San Juan (sj)
+
+```{r}
+
+plot(ts.sj.object,main="Time Series for Monthly Data for San Juan",ylab="Total Cases")
+abline(reg=lm(ts.sj.object~time(ts.sj.object)))
+
+#This will aggregate the cycles and display a year on year trend
+plot(aggregate(ts.sj.object,FUN=mean),xlab="Years",ylab="Mean of Total Cases",main="Mean of Total Cases Over the Years for San Juan")#1994 year had a very high number of dengue cases
+
+#Box plot across months will give us a sense on seasonal effect
+boxplot(ts.sj.object~cycle(ts.sj.object),xlab="Months",ylab="Total cases",xaxt = "n",main="Box Plot Across Months For San Juan")
+lablist.x<-as.vector(c("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"))
+axis(1, at=seq(1, 12, by=1), labels = FALSE)
+text(x = seq(1, 12, by=1), par("usr")[3], labels = lablist.x, srt = 45, pos =1, xpd = TRUE)
+#variation for months 8,9,10 is larger
+
+library('tseries')
+#Augmented Dickey-Fuller Test
+adf.test(diff(log(ts.sj.object)), alternative="stationary", k=0)
+
+```
+
+
+Inferences:
+  1994 year had a very high number of dengue cases.
+  Variation for months Aug,Sep,Oct is larger.
+  
+  
+#For Iquitos(iq)
+
+```{r}
+
+plot(ts.iq.object,main="Time Series for Monthly Data for Iquitos",ylab="Total Cases")
+abline(reg=lm(ts.iq.object~time(ts.iq.object)))
+
+
+#This will aggregate the cycles and display a year on year trend
+plot(aggregate(ts.iq.object,FUN=mean),xlab="Years",ylab="Mean of Total Cases",main="Mean of Total Cases Over the Years for Iquitos") #3peaks at around 2003, 2005,2009
+
+#Box plot across months will give us a sense on seasonal effect
+boxplot(ts.iq.object~cycle(ts.iq.object),xlab="Months",ylab="Total Cases",xaxt = "n",main="Box Plot Across Months For Iquitos")
+lablist.x<-as.vector(c("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"))
+axis(1, at=seq(1, 12, by=1), labels = FALSE)
+text(x = seq(1, 12, by=1), par("usr")[3], labels = lablist.x, srt = 45, pos =1, xpd = TRUE)
+
+#high variation in months 1,2,9,10,11,12
+
+library('tseries')
+#Augmented Dickey-Fuller Test
+adf.test(diff(ts.iq.object), alternative="stationary", k=0) ##without log
+
+
+
+```
+
+Inference:
+  high variation in months Jan,Feb,Sep,Oct,Nov,Dec
+
+
+#Adf test with log
+#	a)with epsilon for all the data for iquitos
+
+
+```{r}
+#adding a small value for fixing 0 cases log issue
+data = ts.iq$total_cases + .000000001
+ts.iq.object=ts(data, start =c(2000,7), end =c(2010,6) , frequency = 12 )
+
+#Augmented Dickey-Fuller Test
+adf.test(diff(log(ts.iq.object)), alternative="stationary", k=0) ##with log
+
+```
+
+
+#2. Adf test with log
+#	b)leave out all the initial data with 0's ..then for all the remaining point add epsilon and #	run the test
+
+
+
+```{r}
+
+new=ts.iq[!(ts.iq$year %in% c(2000,2001)),] #The intial years have a lot of 0 total_cases this could possible be a case of unreported dengue cases
+
+#adding a small value for fixing 0 cases log issue.
+data = new$total_cases + .000000001
+ts.iq.object=ts(data, start =c(2001,11), end =c(2010,6) , frequency = 12 )
+
+#Augmented Dickey-Fuller Test
+adf.test(diff(log(ts.iq.object)), alternative="stationary", k=0) ##with log
+
+
+```
+
+##Conclusions so far
+
+For both the cities, the time series is stationary and non-seasonal. Therefore, we the series has trend and residuals only. Hence, we SMA() instead of using decompose()
+```{r}
+library(TTR)
+#For sj:
+#Smoothing over moving average value n
+#Tried for different values for n=10,20,30.
+plot.ts(SMA(ts.sj.object,n=40),main='San Juan: Trend Analysis',xlab='Date',ylab='Total no. of dengue cases')
+
+#For iq:
+#We cannot really see much of trend for this city
+plot.ts(SMA(ts.iq.object,n=20),main='Iquitos: Trend Analysis',xlab='Date',ylab='Total no. of dengue cases')
+```
+
+##Simple Exponential Smoothing
+Since we have a time series that can be described using an additive model with constant level and no seasonality, we use simple exponential smoothing to make short-term forecasts.
+
+Forecast provided are a constant value even on reducing the value of alpha.
+
+The plot of in-sample forecast errors seem to have roughly constant variance over time, although the size of the fluctuations around 2005 is more than that at other dates.
+
+The plot shows that the distribution of forecast errors has a normal distribution.
+
+Ljung-Box test gives a p-value<0.05 which indicates that we can reject the null hypothesis assuming a 5% chance of making a mistake. So we can say that the forecast error are showing dependence on each other.
+
+This suggests that the simple exponential smoothing method provides a predictive model which cannot be improved upon using time series analysis.
+
+```{r}
+library(forecast)
+library(lubridate)
+
+ts.sj=final_data[final_data$city=='sj',c('total_cases')]
+ts.iq=final_data[final_data$city=='iq',c('total_cases')]
+
+ts.sj=head(ts.sj,800)
+ts.iq=head(ts.iq,400)
+
+#ts.sj.object=ts(data = ts.sj, start =c(1990,18), end =c(2008,17) , frequency = 52 )
+ts.sj.object=ts(ts.sj, freq=365.25/7, start=decimal_date(ymd("1990-04-30")))
+ts.iq.object=ts(ts.iq, freq=365.25/7, start=decimal_date(ymd("2000-07-01")))
+
+temp1=HoltWinters(ts.sj.object, beta=FALSE, gamma=FALSE, alpha=0.2)
+plot(temp1,ylab='Total no. of dengue cases',xlab='Date',main='Holt-Winters for San Juan')
+
+sj_forecast=forecast:::forecast.HoltWinters(temp1,h=133)
+plot(sj_forecast,ylab='Total no. of dengue cases',xlab='Date',main='Forecast from Holt-Winters for San Juan')
+
+temp2=HoltWinters(ts.iq.object, beta=FALSE, gamma=FALSE, alpha=0.5)
+plot(temp2,ylab='Total no. of dengue cases',xlab='Date',main='Holt-Winters for Iquitos')
+
+iq_forecast=forecast:::forecast.HoltWinters(temp2,h=118)
+plot(iq_forecast,ylab='Total no. of dengue cases',xlab='Date',main='Forecast from Holt-Winters for Iquitos')
+
+#For SJ:
+sj_forecast$residuals[1]=0
+acf(sj_forecast$residuals)
+
+plot.ts(sj_forecast$residuals,main='Forecast Residuals for SJ')
+print('For SJ:')
+Box.test(sj_forecast$residuals,type="Ljung-Box")
+
+plotForecastErrors <- function(forecasterrors)
+{
+  # make a histogram of the forecast errors:
+  mybinsize <- IQR(forecasterrors)/4
+  mysd <- sd(forecasterrors)
+  mymin <- min(forecasterrors) - mysd*5
+  mymax <- max(forecasterrors) + mysd*3
+  # generate normally distributed data with mean 0 and standard deviation mysd
+  mynorm <- rnorm(10000, mean=0, sd=mysd)
+  mymin2 <- min(mynorm)
+  mymax2 <- max(mynorm)
+  if (mymin2 < mymin) { mymin <- mymin2 }
+  if (mymax2 > mymax) { mymax <- mymax2 }
+  # make a red histogram of the forecast errors, with the normally distributed
+  mybins <- seq(mymin, mymax, mybinsize)
+  hist(forecasterrors, col="red", freq=FALSE, breaks=mybins)
+  # freq=FALSE ensures the area under the histogram = 1
+  # generate normally distributed data with mean 0 and standard deviation mysd
+  myhist <- hist(mynorm, plot=FALSE, breaks=mybins)
+  # plot the normal curve as a blue line on top of the histogram of forecast errors:
+  points(myhist$mids, myhist$density, type="l", col="blue", lwd=2)
+}
+
+#Cannot rename the label of plot
+plotForecastErrors(sj_forecast$residuals)
+
+#For IQ:
+iq_forecast$residuals[1]=0
+acf(iq_forecast$residuals)
+
+plot.ts(iq_forecast$residuals,main='Forecast Residuals for IQ')
+print('For IQ:')
+Box.test(iq_forecast$residuals,type="Ljung-Box")
+
+#Cannot rename the label of plot
+plotForecastErrors(iq_forecast$residuals)
+```
+
+## Auto ARIMA model
+
+There is a lot of autocorrelation seen.
+Forecast values constant no use
+AIC and BIC values cannot be reduced further..Hessian matrix will give error because it won't be able to converge
+
+```{r}
+ts.sj=final_data[final_data$city=='sj',c('total_cases')]
+ts.iq=final_data[final_data$city=='iq',c('total_cases')]
+
+ts.sj=head(ts.sj,800)
+ts.iq=head(ts.iq,400)
+
+#ts.sj.object=ts(data = ts.sj, start =c(1990,18), end =c(2008,17) , frequency = 52 )
+ts.sj.object=ts(ts.sj, freq=365.25/7, start=decimal_date(ymd("1990-04-30")))
+ts.iq.object=ts(ts.iq, freq=365.25/7, start=decimal_date(ymd("2000-07-01")))
+
+fit=auto.arima(ts.sj.object,stationary = TRUE,seasonal=FALSE)
+tsdisplay(residuals(fit), lag.max=45, main='(1,0,2) Model Residuals')
+test=forecast(fit,h=133)
+plot(test)
+
+fit=auto.arima(ts.iq.object,stationary = TRUE,seasonal=FALSE)
+tsdisplay(residuals(fit), lag.max=45, main='(1,0,2) Model Residuals')
+test=forecast(fit,h=118)
+plot(test)
+
+```
+#Neural Networks: Fitting given dataset into a neural network and then predicting number of Dengue cases.
+
+A neural  network is then built keeping in mind the number of input parameters which are non numeric(21). First scaling is performed on the data and then it is split into testing and training dataset. Training dataset accounts for about 600 rows and 400 rows as inputs for sj and iq and testing dataset as 333 and 118 rows repectively. Since ours is a prediction model, we donot perform simple random sampling sut sequentially divide the datset. Further more for each hidden layer, number of neurons are computed as 2/3rd the number of input parameters until the parameter to be predicted is got(total_cases). 
+A neural network without splitting the dataset was also tried by replacing sj and iq in city with numeric values 1 and 0. However the model failed to predict appropriate values with mae of order >1000. 
+
+```{r}
+set.seed(15)
+library(neuralnet)
+library(devtools)
+source_url('https://gist.githubusercontent.com/fawda123/7471137/raw/466c1474d0a505ff044412703516c34f1a4684a5/nnet_plot_update.r')
+
+View(dengue_features_train)
+View(dengue_labels_train)
+data<-dengue_features_train
+data_sj <- data[ which(data$city=='sj'), ]
+data_iq <- data[ which(data$city=='iq'), ]
+
+data_iq <- data_iq[c(2:3,5:22)] #removing start_date_of_week and city
+data_sj <- data_sj[c(2:3,5:22)] #removing start_date_of_week and city
+
+apply(data_iq,2,function(x) sum(is.na(x)))
+apply(data_sj,2,function(x) sum(is.na(x)))
+
+#splitting data into training and testing for each city
+train_sj <- head(data_sj, 600)
+test_sj  <- tail(data_sj,nrow(data_sj) - 600)
+train_iq <- head(data_iq, 400)
+test_iq  <- tail(data_iq,nrow(data_iq) - 400)
+
+#Scaling the data
+data_temp_sj <- data_sj[, sapply(data_sj, is.numeric)]
+maxs <- apply(data_temp_sj, 2, max) 
+mins <- apply(data_temp_sj, 2, min)
+scaled <- as.data.frame(scale(data_temp_sj, center = mins, scale = maxs - mins))
+train_sj_ <- head(scaled, 600)
+test_sj_  <- tail(scaled,nrow(scaled) - 600)
+
+#Fitting in the data
+n <- names(train_sj_)
+nn_sj <- neuralnet(total_cases ~ reanalysis_avg_temp_k + reanalysis_min_air_temp_k + 
+  + year + weekofyear + ndvi_ne + ndvi_nw + ndvi_se + 
+    ndvi_sw + reanalysis_precip_amt_kg_per_m2 + reanalysis_relative_humidity_percent + reanalysis_sat_precip_amt_mm + reanalysis_specific_humidity_g_per_kg + 
+    reanalysis_tdtr_k + station_avg_temp_c + station_diur_temp_rng_c + 
+    station_max_temp_c + station_min_temp_c + station_precip_mm + 
+    month,data=train_sj_,hidden=c(12,8,6,4,2),linear.output=T)
+plot.nnet(nn_sj)
+
+data_temp_iq <- data_iq[, sapply(data_iq, is.numeric)]
+maxs <- apply(data_temp_iq, 2, max) 
+mins <- apply(data_temp_iq, 2, min)
+scaled <- as.data.frame(scale(data_temp_iq, center = mins, scale = maxs - mins))
+train_iq_ <- head(scaled, 400)
+test_iq_  <- tail(scaled,nrow(scaled) - 400)
+View(test_iq_)
+n <- names(train_iq_)
+nn_iq <- neuralnet(total_cases ~ reanalysis_avg_temp_k + reanalysis_min_air_temp_k + 
+  + year + weekofyear + ndvi_ne + ndvi_nw + ndvi_se + 
+    ndvi_sw + reanalysis_precip_amt_kg_per_m2 + reanalysis_relative_humidity_percent + reanalysis_sat_precip_amt_mm + reanalysis_specific_humidity_g_per_kg + 
+    reanalysis_tdtr_k + station_avg_temp_c + station_diur_temp_rng_c + 
+    station_max_temp_c + station_min_temp_c + station_precip_mm + 
+    month,data=train_iq_,hidden=c(12,8,6,4,2),linear.output=T)
+plot.nnet(nn_iq)
+```
+
+Inorder to be able to prdeict values, compute() of neuralnet is called and predicted values stored. This again needs to be scaled back to original scale and mae are calculated.
+
+```{r}
+#Compute is a function of neuralnet which gives us predicted values from neural network
+pr_sj.nn <- neuralnet::compute(nn_sj,test_sj_[,1:19])
+#Rescaling predicted value
+pr_sj_.nn <- pr_sj.nn$net.result*(max(data_sj$total_cases)-min(data_sj$total_cases))+min(data_sj$total_cases)
+test_sj.r <- (test_sj$total_cases)*(max(data_sj$total_cases)-min(data_sj$total_cases))+min(data_sj$total_cases)
+
+pr_iq.nn <- neuralnet::compute(nn_iq,test_iq_[,1:19])
+pr_iq_.nn <- pr_iq.nn$net.result*(max(data_iq$total_cases)-min(data_iq$total_cases))+min(data_iq$total_cases)
+test_iq.r <- (test_iq$total_cases)*(max(data_iq$total_cases)-min(data_iq$total_cases))+min(data_iq$total_cases)
+
+#Printing mean absolute error
+mae <- function(error) return(mean(abs(error)) )
+mae(pr_sj_.nn-test_sj$total_cases)
+mae(pr_iq_.nn-test_iq$total_cases)
+```
+
+
+
+##Competition Result 
+Since SVR gave us the least Mean Absolute Error, we use it to predict values for the 2 cities for DengAI competition on Drivendata.
+
+```{r}
+dengue_features_test <- read_csv("dengue_features_test.csv")
+
+drops=c('precipitation_amt_mm','reanalysis_dew_point_temp_k','reanalysis_max_air_temp_k','reanalysis_air_temp_k')
+
+dengue_features_test=dengue_features_test[,!(names(dengue_features_test) %in% drops)]
+
+names(dengue_features_test)
+
+
+drops=c('ndvi_ne','ndvi_nw','station_avg_temp_c','station_diur_temp_rng_c') #<=1.2%
+
+#Impute missing values ----------------------------------------------------------------------
+
+sj_features_test=dengue_features_test[dengue_features_test$city=='sj',!(names(dengue_features_test) %in% drops)]
+iq_features_test=dengue_features_test[dengue_features_test$city=='iq',!(names(dengue_features_test) %in% drops)]
+
+
+##impute NAs by the latest value
+sj_features_test= na.locf(sj_features_test,fromLast = TRUE)
+iq_features_test= na.locf(iq_features_test,fromLast = TRUE)
+
+dengue_features_test[,!(names(dengue_features_test) %in%  drops)]=rbind(sj_features_test,iq_features_test)
+
+month <- dengue_features_test$week_start_date
+month<-month(as.POSIXlt(month, format="%Y-%m-%d"))
+dengue_features_test$month<-month
+
+##MICE
+drops=c("city","week_start_date")
+sj<-dengue_features_test[dengue_features_test$city=='sj',!(names(dengue_features_test) %in% drops)]
+sj<-mice(data = sj, m = 5, method = "pmm", maxit = 50, seed = 500)
+sj<-complete(sj)
+dengue_features_test[dengue_features_test$city=='sj',!(names(dengue_features_test) %in% drops)]=sj
+
+iq<-dengue_features_test[dengue_features_test$city=='iq',!(names(dengue_features_test) %in% drops)]
+iq<-mice(data = iq, m = 5, method = "pmm", maxit = 50, seed = 500)
+iq<-complete(iq)
+dengue_features_test[dengue_features_test$city=='iq',!(names(dengue_features_test) %in% drops)]=iq
+
+
+#scaling ------------------------------------------------------------------------------------ 
+drops=c('city','week_start_date')
+
+temp=data.frame(data.matrix(dengue_features_test[,!(names(dengue_features_test) %in% drops)]))
+
+dengue_features_test[,!(names(dengue_features_test) %in% drops)]=temp
+
+##scaling columns where temp is in Kelvin to Celsius
+l=c('reanalysis_avg_temp_k','reanalysis_min_air_temp_k')
+dengue_features_test[,l]=dengue_features_test[,l]-273.15
+
+#SVR-----------------------------------------------------------------------------------------
+
+drops=c('city','week_start_date')
+
+sj_test=dengue_features_test[dengue_features_test$city=='sj',!(names(dengue_features_test) %in% drops)]
+iq_test=dengue_features_test[dengue_features_test$city=='iq',!(names(dengue_features_test) %in% drops)]
+
+
+
+sj_test$fitted <- predict(svm.model.sj,newdata=sj_test)
+iq_test$fitted <- predict(svm.model.iq,newdata=iq_test)
+
+sj_test$fitted[sj_test$fitted < 0]=0
+iq_test$fitted[iq_test$fitted < 0]=0
+
+sj_test$fitted <- as.integer(sj_test$fitted)
+iq_test$fitted <- as.integer(iq_test$fitted)
+
+
+sj_ans=subset(sj_test,select = c("year","weekofyear","fitted"))
+sj_ans$city=c("sj")
+iq_ans=subset(iq_test,select = c("year","weekofyear","fitted"))
+iq_ans$city=c("iq")
+
+solutions<-rbind(sj_ans,iq_ans)
+
+submission_format <- read_csv("submission_format.csv")
+submission_format$total_cases=solutions$fitted
+View(submission_format)
+write.csv(submission_format,'submission_format_output.csv')
+```
